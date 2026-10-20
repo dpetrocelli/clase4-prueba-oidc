@@ -1,0 +1,38 @@
+# The smallest OIDC test: GitHub Actions logs into GCP with NO key stored,
+# shows who it is, reads what it may read, and fails where it may not write.
+# Repository variables: GCP_PROJECT_ID, GCP_WORKLOAD_IDENTITY_PROVIDER,
+# GCP_SERVICE_ACCOUNT. No secrets.
+name: prueba
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # lets the job ask GitHub for the OIDC token
+
+jobs:
+  gcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Who am I in GCP
+        run: gcloud auth list
+
+      - name: What I may read (images in Artifact Registry)
+        run: gcloud artifacts docker images list us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/infra-cloud-template --limit 5
+
+      - name: What I may NOT do (create a bucket) -> must fail
+        run: |
+          if gcloud storage buckets create gs://${{ vars.GCP_PROJECT_ID }}-prueba-${{ github.run_id }} --location=us-central1; then
+            echo "::error::it could create a bucket: too many permissions"; exit 1
+          fi
+          echo "::notice::denied, as expected: least privilege"
