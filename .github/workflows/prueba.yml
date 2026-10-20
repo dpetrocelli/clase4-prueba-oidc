@@ -1,7 +1,11 @@
-# The smallest OIDC test: GitHub Actions logs into GCP with NO key stored,
-# shows who it is, reads what it may read, and fails where it may not write.
+# The class identities, tested with NO key stored: each job logs into GCP as
+# its own service account via OIDC and checks it can do its part.
+#   infra -> infra-deployer: VMs, firewall, state bucket
+#   app   -> app-deployer: push images to Artifact Registry, read the VM IP
+# Plus the SSH pair the VM will trust: the secret must match the public key.
 # Repository variables: GCP_PROJECT_ID, GCP_WORKLOAD_IDENTITY_PROVIDER,
-# GCP_SERVICE_ACCOUNT. No secrets.
+# GCP_INFRA_SERVICE_ACCOUNT, GCP_APP_SERVICE_ACCOUNT, SSH_PUBLIC_KEY.
+# Secret: SSH_PRIVATE_KEY.
 name: prueba
 
 on:
@@ -11,28 +15,65 @@ on:
 
 permissions:
   contents: read
-  id-token: write # lets the job ask GitHub for the OIDC token
+  id-token: write # lets each job ask GitHub for the OIDC token
 
 jobs:
-  gcp:
+  infra:
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          service_account: ${{ vars.GCP_INFRA_SERVICE_ACCOUNT }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Who am I in GCP
         run: gcloud auth list
 
-      - name: What I may read (images in Artifact Registry)
-        run: gcloud artifacts docker images list us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/infra-cloud-template --limit 5
+      - name: Can see VMs
+        run: gcloud compute instances list --format="value(name,status)"
 
-      - name: What I may NOT do (create a bucket) -> must fail
+      - name: Can reach the OpenTofu state bucket
+        run: gcloud storage ls gs://${{ vars.GCP_PROJECT_ID }}-tfstate/
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_APP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Who am I in GCP
+        run: gcloud auth list
+
+      - name: Can push to Artifact Registry
         run: |
-          if gcloud storage buckets create gs://${{ vars.GCP_PROJECT_ID }}-prueba-${{ github.run_id }} --location=us-central1; then
-            echo "::error::it could create a bucket: too many permissions"; exit 1
+          IMAGE=us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/infra-cloud-template/prueba-oidc:${GITHUB_SHA::7}
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+          docker pull -q hello-world
+          docker tag hello-world "$IMAGE"
+          docker push -q "$IMAGE"
+
+      - name: Cannot create a VM (that is infra's job) -> must fail
+        run: |
+          if gcloud compute instances create prueba-no-debe --zone us-central1-a --machine-type e2-micro --quiet; then
+            gcloud compute instances delete prueba-no-debe --zone us-central1-a --quiet
+            echo "::error::app-deployer could create a VM: too many permissions"; exit 1
           fi
           echo "::notice::denied, as expected: least privilege"
+
+  ssh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: The secret is the pair of the public key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
+        run: |
+          printf '%s\n' "$SSH_PRIVATE_KEY" > key && chmod 600 key
+          [ "$(ssh-keygen -y -f key | cut -d' ' -f1,2)" = "$(echo "$SSH_PUBLIC_KEY" | cut -d' ' -f1,2)" ]
+          echo "::notice::SSH pair OK"
