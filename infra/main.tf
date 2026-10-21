@@ -60,7 +60,7 @@ resource "google_compute_instance" "app" {
   metadata_startup_script = file("${path.module}/startup.sh")
 
   # The VM pulls from Artifact Registry as the default compute account
-  # (it already has roles/artifactregistry.reader in this project).
+  # (give it roles/artifactregistry.reader: README, section 1).
   service_account {
     scopes = ["cloud-platform"]
   }

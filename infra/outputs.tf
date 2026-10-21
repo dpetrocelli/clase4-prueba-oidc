@@ -15,5 +15,5 @@ output "app_url" {
 
 output "ssh_command" {
   description = "How to get in by hand."
-  value       = "ssh -i ~/.ssh/clase4-prueba ${var.ssh_user}@${google_compute_instance.app.network_interface[0].access_config[0].nat_ip}"
+  value       = "ssh -i ~/.ssh/clase4 ${var.ssh_user}@${google_compute_instance.app.network_interface[0].access_config[0].nat_ip}"
 }
